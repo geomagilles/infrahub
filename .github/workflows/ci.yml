@@ -590,6 +590,13 @@ jobs:
     timeout-minutes: 30
     env:
       INFRAHUB_DB_TYPE: neo4j
+      # Integration tests are I/O-bound (waiting on the neo4j testcontainer), so they scale
+      # well past the repo-wide default of 4 workers. The per-worker neo4j container has a
+      # bounded heap/page cache and the suite trims worker memory per class, so 8 workers use
+      # less memory than the previous 4 unbounded workers did.
+      PYTEST_XDIST_WORKER_COUNT: 8
+      # Cap malloc arenas so freed pages are actually returned to the OS under many workers.
+      MALLOC_ARENA_MAX: 2
     steps:
       - name: "Check out repository code"
         uses: "actions/checkout@v7"
