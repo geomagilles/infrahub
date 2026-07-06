@@ -9,27 +9,25 @@ Status: draft
 
 ## Summary
 
-Introduce two persistent preference surfaces, modelled as **`StandardNode` objects** (the internal
-object type used by `Branch`/`Root`, `backend/infrahub/core/node/standard.py`) — **not** schema
-nodes:
+Introduce persistent user and organisation-wide preferences, modelled as a **`StandardNode` object**
+(the internal object type used by `Branch`/`Root`, `backend/infrahub/core/node/standard.py`) — **not**
+a schema node.
 
-- `GlobalPreference` — admin-defined defaults that apply to every user (one singleton).
-- `UserPreference` — per-user overrides (one per account, keyed by `account_id`).
+A single **`Preference`** class serves both: each row is owned by a principal identified by
+`owner_id` — an **account id** for a user's preferences, or the **Root node id** (`registry.id`) for
+the organisation-wide (global) preferences. One class, one set of fields, no duplication.
 
-A single backend-computed query returns the **effective** preferences for the calling user (global
-merged with their personal overrides), so the frontend never has to merge them itself. There is no
-auto-generated schema CRUD; the entire read/write surface is **custom GraphQL** (like `Branch`),
-which is exactly what gives us control over visibility.
+Three custom GraphQL read fields (effective / user / global) and one write mutation make up the
+entire surface — there is no auto-generated schema CRUD (like `Branch`), which is exactly what gives
+us control over visibility. The **effective** field returns the caller's resolved view (global merged
+with their personal overrides) so the frontend never merges itself.
 
 V1 ships only two fields — `date_format` and `timezone` — to validate the model, query, mutations,
-and UI plumbing end to end. Additional preferences (dark mode, etc.) land in follow-up tickets once
-the foundation is proven.
+and UI plumbing end to end. Additional preferences (dark mode, etc.) land in follow-up tickets.
 
-Three adjacent concerns get their own spec/ticket and are explicitly **not** part of V1:
-
-- Saved views — `dev/specs/2026-04-saved-views.md`
-- Saved filters — `dev/specs/2026-04-saved-filters.md`
-- "Show extra fields" toggle persistence — `dev/specs/2026-04-show-extra-fields.md`
+Three adjacent concerns get their own spec/ticket and are explicitly **not** part of V1: saved views
+(`dev/specs/2026-04-saved-views.md`), saved filters (`dev/specs/2026-04-saved-filters.md`), and
+"show extra fields" persistence (`dev/specs/2026-04-show-extra-fields.md`).
 
 ## Why `StandardNode` and not a schema node
 
@@ -37,250 +35,248 @@ This is the central design decision, reversing an earlier draft that used `CoreG
 `CoreUserPreference` schema nodes.
 
 A schema `Node` gets an **auto-generated generic GraphQL query** and is governed by **per-kind**
-object permissions. Infrahub permissions cannot restrict reads **per row** — so any account with
-read on the kind can query *every* user's preference row. There is no way to hide user B's settings
-from user A on a schema node short of suppressing the generic query and bolting a filter onto a
-custom resolver, which is fragile.
+object permissions. Infrahub permissions cannot restrict reads **per row** — so any account with read
+on the kind could query *every* user's preference row. A `StandardNode` has **no schema-registry
+entry and no auto-generated GraphQL**: the only read/write paths are the resolvers we write by hand,
+so visibility is **structural** — there is no generic query that could leak another user's
+preferences, and each resolver binds to the calling account. Secondary benefits: it keeps the core
+schema lean, and `StandardNode`s are global (not branch-versioned), which matches preferences exactly.
 
-A `StandardNode` (e.g. `Branch`) has **no schema-registry entry and no auto-generated GraphQL**. The
-only read/write paths are the resolvers we write by hand, so visibility is **structural**: there is
-no generic query that could leak another user's preferences, and the custom query binds to the
-calling account. Secondary benefits: it keeps the product's core schema lean, and `StandardNode`s
-are global (not branch-versioned), which matches preferences exactly.
-
-> Profiles were considered for the "defaults + override" merge and **rejected**: they are a
-> schema-`Node` feature (irrelevant to `StandardNode`), and a two-field global→user merge is three
-> lines in a resolver. No profiles are used.
-
-## Problem Statement
-
-- UI defaults (date format, timezone) live in component state or the browser's locale. They cannot be set centrally by an organization, and a user's choice does not survive a device switch.
-- There is no place for an admin to express "use ISO dates organisation-wide" or "default everyone to UTC".
-- There is no backend-stored concept of "preferences" that the SDK or other clients can read in a controlled way.
+> **Known limitation (accepted for V1).** A `StandardNode` cannot declare a schema relationship with
+> `on_delete: cascade` (that is a schema-`Node` feature), so `owner_id` is a plain string, not a graph
+> link. Deleting an account therefore leaves its `Preference` row behind as unreachable dead data.
+> Account ids are UUIDs and never reused, so such a row is permanently unreachable and benign. Cleanup
+> is tracked in Jira and out of scope for V1.
 
 ## Solution Overview
 
-Two `StandardNode` objects, one custom read query that fuses them.
+One `StandardNode` class, owner-keyed; three custom read fields; one write mutation.
 
-| Object | Cardinality | Who writes | Who reads |
+| Rows | Owner (`owner_id`) | Who writes | Who reads |
 |---|---|---|---|
-| `GlobalPreference` | Singleton | Holders of `manage_global_preferences` (super admins implicitly) | Any authenticated account (via the effective query) |
-| `UserPreference` | One per account (`account_id`) | The owning account only | The owning account only (admins via tooling) |
+| Global (one) | the Root id (`registry.id`) | Holders of `manage_global_preferences` (super admins implicitly) | Any authenticated account (via the effective field); the raw global read is gated |
+| Per user | the account id | The owning account only | The owning account only |
 
-Effective resolution per field: **user value if set, else global value, else the browser's own value** (the browser-resolved timezone, and the browser locale's date/time formatting). There is no fixed built-in pattern fallback — when neither preference is set the UI renders exactly as the user's browser would by default.
-Defaults live in the frontend (so the API returns `null` for "no opinion stored" and the SDK can
-apply its own).
+Effective resolution per field: **user value if set, else global value, else the client default**.
+The backend stores `null` for "no opinion", and reads **never create** a row — a missing row simply
+means "nothing set". On the web the client default is the **browser's own value** (browser locale
+formatting; browser-resolved timezone); the backend does not render dates itself (clients do).
 
 ## Success Criteria — V1
 
-- An admin (holder of `manage_global_preferences`) can set `date_format` and `timezone` once for the organisation; any authenticated user without a personal override sees those values.
-- A user can override either field on their own preferences page; the override takes effect on next page load and is visible from any device.
-- Clearing a user override falls back to the global value; clearing the global value falls back to the frontend default.
-- **A user cannot read another user's `UserPreference`** — there is no generic query, and the custom query only ever returns the caller's own row. (This is the primary reason for the `StandardNode` model.)
-- A single GraphQL query returns the effective value to render with — no client-side merging.
+- An admin (holder of `manage_global_preferences`) can set `date_format`/`timezone` once for the
+  organisation; any user without a personal override sees those values.
+- A user can override either field; the override takes effect on next load and is visible from any
+  device. Clearing an override falls back to the global value, then the client default.
+- **A user cannot read another user's preferences** — no generic query, and each resolver only ever
+  touches the caller's `owner_id`.
+- The effective field returns the value to render with — no client-side merging.
 
 ## V1 Fields
 
-Identical field set on both objects (so the merge is trivially per-field). On a `StandardNode` these
-are plain pydantic fields, not schema attributes:
+One `Preference` class; on a `StandardNode` these are plain pydantic fields, not schema attributes:
 
 | Field | Type | Notes |
 |---|---|---|
-| `date_format` | `str \| None` | A **semantic format key**, not a rendering pattern — one of `ISO_8601`, `ISO_DATETIME`, `ISO_DATETIME_SECONDS`, `EU_DATETIME`, `US_12H` (see "Date format: semantic keys" below). Each client maps the key to its own renderer (web → date-fns, backend → strftime), so the stored value is not coupled to one frontend library. Typed as the `DateFormat` GraphQL enum on write, so an unknown key is rejected at the API layer — the value is *not* free-form. |
-| `timezone` | `str \| None` | IANA timezone name (`Europe/Paris`, `UTC`). Selected in the UI from `Intl.supportedValuesOf('timeZone')`. Unset = browser-resolved zone. |
-
-`UserPreference` additionally carries `account_id: str` (the owning account). Both fields above are
-optional/nullable on both objects. Other candidates (dark mode, language, density) are deferred —
-see "Future preferences" below.
+| `owner_id` | `str` | The account id (user preferences) or the Root id (global preferences). |
+| `date_format` | `str \| None` | A **semantic format key** (see below), validated against the `DateFormat` enum — never an arbitrary string. |
+| `timezone` | `str \| None` | IANA timezone name (`Europe/Paris`, `UTC`). Unset = the client's own zone. |
 
 ### Date format: semantic keys
 
-`date_format` stores a **semantic key**, never a library-specific rendering pattern. The value is
-decoupled from any one frontend library, so every client maps the key to its own renderer: the web
-app to a date-fns pattern, the backend to `strftime` (`render_datetime` in
-`core/preferences/formats.py`), a future SDK to whatever it uses. A `DateFormat` GraphQL enum built
-from the same canonical key list validates writes for free (unknown keys rejected before any write)
-and keeps the enum and the render map from drifting.
+`date_format` stores a **semantic key**, never a library-specific rendering pattern, so the stored
+value is decoupled from any one client's formatter. The web app maps the key to a date-fns pattern; a
+future non-web client would map it however it renders. A single Python enum
+**`DateFormat`** (`core/preferences/constants.py`) is the source of truth: the GraphQL `DateFormat`
+enum is derived from it (`Enum.from_enum`, `graphql/types/preferences.py`) and the `Preference` model
+validates `date_format` against it, so an invalid key is rejected both at the model and the API.
 
-| Key | date-fns (web) | strftime (backend) | Example |
-|---|---|---|---|
-| `ISO_8601` | `yyyy-MM-dd'T'HH:mm:ssXXX` | `%Y-%m-%dT%H:%M:%S%z` | `2026-07-01T14:30:00+02:00` |
-| `ISO_DATETIME` *(default)* | `yyyy-MM-dd HH:mm` | `%Y-%m-%d %H:%M` | `2026-07-01 14:30` |
-| `ISO_DATETIME_SECONDS` | `yyyy-MM-dd HH:mm:ss` | `%Y-%m-%d %H:%M:%S` | `2026-07-01 14:30:00` |
-| `EU_DATETIME` | `dd/MM/yyyy HH:mm` | `%d/%m/%Y %H:%M` | `01/07/2026 14:30` |
-| `US_12H` | `MM/dd/yyyy hh:mm a` | `%m/%d/%Y %I:%M %p` | `07/01/2026 02:30 PM` |
+| Key | Web (date-fns) | Example |
+|---|---|---|
+| `ISO_8601` | `yyyy-MM-dd'T'HH:mm:ssXXX` | `2026-07-01T14:30:00+02:00` |
+| `ISO_DATETIME` *(default)* | `yyyy-MM-dd HH:mm` | `2026-07-01 14:30` |
+| `ISO_DATETIME_SECONDS` | `yyyy-MM-dd HH:mm:ss` | `2026-07-01 14:30:00` |
+| `EU_DATETIME` | `dd/MM/yyyy HH:mm` | `01/07/2026 14:30` |
+| `US_12H` | `MM/dd/yyyy hh:mm a` | `07/01/2026 02:30 PM` |
 
 Every preset includes date **and** time. The set is deliberately limited to formats that render
-identically on every client with no locale library and no ambiguity. Locale-dependent forms
-(a localized long/month-name format) and a relative-time mode ("2 days ago") were considered and
-**dropped**: the former needs a locale library server-side and renders differently per client
-(defeating a portable key), and relative time is a display *mode* — inherently relative to "now" and
-ambiguous server-side — not a format, so it doesn't belong in this enum. Both can return later
-(relative time as a separate display toggle) without reshaping the stored value.
+identically on every client with no locale library. Locale-dependent forms and a relative-time mode
+were considered and **dropped** (locale forms aren't portable; relative time is a display mode, not a
+format). The backend does **not** render dates from the key — there is no server-side renderer in V1;
+clients render. If a server-side consumer (notifications, exports) ever needs it, a renderer is added
+then.
 
 ## Backend
 
-### Models (`StandardNode`)
+### Model (`StandardNode`)
 
-New `backend/infrahub/core/preferences/models.py` (or similar), following `Branch`
-(`core/branch/models.py`) and `Root` (`core/root.py`):
+`backend/infrahub/core/preferences/models.py` — one class following `Branch`/`Root`:
 
 ```python
-class GlobalPreference(StandardNode):
-    date_format: str | None = None
-    timezone: str | None = None
+class Preference(StandardNode):
+    owner_id: str
+    date_format: Optional[str] = None   # Optional[str] required by StandardNode.guess_field_type
+    timezone: Optional[str] = None
 
-class UserPreference(StandardNode):
-    account_id: str
-    date_format: str | None = None
-    timezone: str | None = None
+    @field_validator("date_format")     # rejects any value not in DateFormat
+    ...
+
+    @classmethod
+    async def get_for_owner(cls, db, owner_id) -> Preference | None: ...   # never creates
+    @classmethod
+    async def get_for_owners(cls, db, owner_ids) -> dict[str, Preference]: ...  # one query, for effective
 ```
 
-- Persisted via the dedicated `StandardNode` Cypher queries (`StandardNodeCreate/Update/GetItem/GetList`, `core/query/standard_node.py`) — `create()` / `update()` / `get_list()` on the base class.
-- `StandardNode`s are **global, not branch-scoped** (attached to `Root` via `IS_PART_OF`); no `BranchSupportType` handling needed.
-- **No schema definition, no `definitions/core/preference.py`, no entry in `core_models`, no generic CRUD.**
-- **No graph migration.** New `StandardNode` types persist on first write. `GlobalPreference` is the one singleton: fetched via a `get_global()` helper that **lazily creates** the empty instance if absent (so existing installs need no migration; new installs may also seed it in `first_time_initialization()` alongside `Root`, decision flagged at implementation — lazy-create is sufficient).
-- `UserPreference` lookup is **by `account_id`**. `StandardNode` has no get-by-field query, so add a small custom Cypher query (a `StandardNodeQuery` subclass) to fetch the one row for an account id — do **not** `get_list()`-all-and-filter-in-Python (that would scan every user's row).
+- Persisted via the `StandardNode` Cypher queries; a small `PreferenceGetByOwnerQuery`
+  (`core/query/preference.py`) fetches by `owner_id IN [...]` (targeted, never scans every row).
+- **Reads never create a row**, and there is **no init seed** — a missing row means "nothing set".
+  The row is created lazily only on the first write (the sole create path), under a per-`owner_id`
+  distributed lock (namespace `PREFERENCE_LOCK_NAMESPACE`) so concurrent first-writes for the same
+  owner can't duplicate and concurrent updates can't lose a field.
+- **No schema definition, no generic CRUD, no graph migration.**
+- Module hygiene: the `manage_global_preferences` permission constant lives in
+  `core/preferences/permissions.py`; `core/preferences/__init__.py` is re-exports only.
 
 ### GraphQL surface (custom, `Branch`-style)
 
-Modelled on `graphql/types/branch.py`, `graphql/queries/branch.py`, `graphql/mutations/branch.py`,
-wired into the root query/mutation in `graphql/schema.py` (the custom path, **not** the
-auto-generated `InfrahubMutation` schema path).
+Shared GraphQL vocabulary (the `DateFormat` and `PreferenceSource` enums, the write-scope enum, and
+the typed response objects) lives in a neutral `graphql/types/preferences.py`, imported by both the
+query and mutation modules (the mutation does not import from the query module). Wired into the root
+query/mutation in `graphql/schema.py`.
 
-The whole surface is organised around one axis: **scope** (`EFFECTIVE` | `GLOBAL` | `USER`) × keys.
-One read query and one write mutation, both scope-parameterized.
-
-**Read** — `InfrahubPreferences(scope: PreferenceScope = EFFECTIVE)`:
+**Reads — three distinct typed fields** (each scope has its own shape and permission, rather than one
+query whose meaning varies by a `scope` argument):
 
 ```graphql
-query InfrahubPreferences($scope: PreferenceScope = EFFECTIVE) {
-  InfrahubPreferences(scope: $scope) {
-    preferences {                # one entry per preference key
-      key                        # "date_format" | "timezone"
-      value                      # resolved value, or null when nothing is defined for that scope
-      source                     # USER | GLOBAL | DEFAULT — where `value` came from
-    }
-    can_edit_global_preferences  # boolean — drives the "Organisation defaults" surface (see Permissions)
+query {
+  InfrahubEffectivePreferences {          # caller's resolved view; any authenticated account
+    date_format { value source }          # value: DateFormat | null; source: USER | GLOBAL | DEFAULT
+    timezone    { value source }          # value: String    | null
   }
+  InfrahubUserPreferences  { date_format timezone }   # caller's OWN raw values (null where unset)
+  InfrahubGlobalPreferences { date_format timezone }  # org-wide raw values; gated
 }
 ```
 
-- **`EFFECTIVE`** (default) — the caller's resolved view: per key `value` = user value if set, else global, else `null`; `source` = `USER`/`GLOBAL`/`DEFAULT`. Any authenticated account; the global singleton is read *internally* to resolve, but the caller only ever gets their own resolved values. `source: DEFAULT` (value `null`) ⇒ the client applies the **browser** value (the only client-side step, since only the browser knows its locale/zone).
-- **`USER`** — the caller's own raw override values (`source: USER`), bound to `account_session.account_id`; never another account.
-- **`GLOBAL`** — the org-wide raw values (`source: GLOBAL`); **requires `manage_global_preferences`** (used by the Organisation-defaults editor, which needs the raw global — an admin who also has a personal override would see `source: USER` under `EFFECTIVE`).
+- **Effective** — per field: user value if set, else global, else `DEFAULT` (value `null` → the
+  client applies its own default). The global row is read internally; raw org values are never exposed
+  here. Reads both owner rows in ONE query.
+- **User** — the caller's own raw values, bound to `account_session.account_id`; no account argument.
+- **Global** — the org-wide raw values; **requires `manage_global_preferences`**, raised before any
+  read (used by the Organisation-defaults editor, which needs the raw global).
 
-The backend **computes the value and attaches an explicit source**, so the frontend never compares
-"user vs global." `preferences` is a list (extensible to future keys) that the hooks collapse into a
-keyed map (`prefs.date_format.{value,source}`).
+The response is **typed** (`date_format` is the `DateFormat` enum, not a stringly `{key, value}`
+list), so the schema is self-describing and the frontend needs no hardcoded key list.
 
-**Write** — one mutation, scope-parameterized:
+**Write — one mutation, write-only scope enum:**
 
 ```graphql
-mutation { InfrahubSetPreferences(scope: USER, date_format: "…", timezone: "…") { ok date_format timezone } }
+mutation { InfrahubSetPreferences(scope: USER, date_format: EU_DATETIME, timezone: "Europe/Paris") { ok date_format timezone } }
 ```
 
-- **`scope: USER`** — **always the caller's own row** (`account_session.account_id`); no account/target argument exists, so there is no path to write another user's row. Lazy-creates on first write; an explicit `null` for a field resets it (the "Automatic" selection).
-- **`scope: GLOBAL`** — gated on `manage_global_preferences`; updates the singleton.
-- **`scope: EFFECTIVE`** — rejected: the resolved view is read-only.
-
-No generic `…Upsert/Update/Delete`, no SDK-introspectable kind.
+- `PreferenceWriteScope` has only **`USER`** and **`GLOBAL`** — `EFFECTIVE` is not a member, so writing
+  the resolved view is unrepresentable (no runtime guard needed).
+- `scope: USER` → the caller's own row (`owner_id = account_id`); no account argument, so no path to
+  write another user's row. `scope: GLOBAL` → the Root-owned row, gated on `manage_global_preferences`.
+- Omitted arg = leave unchanged; explicit `null` = reset the field. `date_format` is the `DateFormat`
+  enum (unknown key rejected at the GraphQL layer).
 
 ### Permissions
 
-Enforced imperatively at the single read + single write entry points, keyed on `scope`, fail-closed
-(unauthenticated/anonymous rejected first):
+Enforced imperatively at each entry point, fail-closed (unauthenticated/anonymous rejected first):
 
 | Operation | Allowed for | Mechanism |
 |---|---|---|
-| Read `scope: EFFECTIVE` | Any authenticated account (own resolved view) | Resolver binds to `account_session.account_id`; global read internally, no gate |
-| Read `scope: USER` | The owning account only | Bound to `account_session.account_id`; no account argument |
-| Read `scope: GLOBAL` | Holders of `manage_global_preferences` (super admins implicitly) | `active_permissions.raise_for_permission(...)` before any raw value is read |
-| Write `scope: USER` | The owning account only | Bound to caller's row; no account argument |
-| Write `scope: GLOBAL` | Holders of `manage_global_preferences` | `raise_for_permission(...)` before the read-modify-write |
-| Write `scope: EFFECTIVE` | — | Rejected (read-only view) |
+| Effective read | Any authenticated account (own resolved view) | Binds to `account_session.account_id`; global read internally, no gate |
+| User read/write | The owning account only | Bound to `account_session.account_id`; no account argument |
+| Global read **and** write | Holders of `manage_global_preferences` (super admins implicitly) | `active_permissions.raise_for_permission(...)` before any raw read / write |
 
-- **User preferences are private by construction.** No generic query, no account argument on reads/writes at `USER` scope — the resolver only ever touches `account_session.account_id`, so user A cannot read or write user B's preferences.
-- **The global scope (read *and* write)** is gated by the new `GlobalPermissions.MANAGE_GLOBAL_PREFERENCES`, checked **imperatively** via `active_permissions.raise_for_permission(...)` (the `Branch`/global-permission idiom, `permissions/manager.py`) — **not** through `get_global_permission_for_kind()` / the object-permission pipeline (that is schema-`Node`-specific and does not apply to a `StandardNode`). Assignable to any role via the existing permissions UI; `super_admin` bypasses. (The global *values* aren't secret — every user's `EFFECTIVE` view already reflects them — so gating the raw `GLOBAL` read is a "only managers touch the global scope directly" principle, not secrecy.)
-- **Frontend gating signal.** `StandardNode`s have no object permission, so the frontend can't use `useGetObjectPermissions`. Every read scope returns `can_edit_global_preferences` (from `active_permissions`) which hides/shows the Organisation-defaults surface. The backend is the source of truth regardless — the `GLOBAL`-scope read and write both enforce the permission.
+The global scope is gated on **read and write** by `GlobalPermissions.MANAGE_GLOBAL_PREFERENCES`,
+checked imperatively (the `Branch`/global-permission idiom, `permissions/manager.py`) — not via the
+object-permission pipeline (schema-`Node`-specific).
+
+**Frontend gating signal.** The preferences reads do **not** return a permission flag. The frontend
+determines whether the user may manage global preferences via the **generic `InfrahubPermissions`
+query** (checking for the `manage_global_preferences` global permission) — the same mechanism used
+elsewhere — rather than a bespoke boolean bolted onto a data query. The backend remains the source of
+truth (the global read/write enforce the permission regardless).
 
 ## Frontend
 
 ### Data layer
 
-- `useEffectivePreferences()` reads `InfrahubPreferences` (default `EFFECTIVE` scope) and exposes a keyed, already-resolved map: `prefs.date_format` / `prefs.timezone` as `{ value, source }` (source `user`/`global`/`default`) + `canEditGlobalPreferences`. Consumers read `value` + `source` directly — no comparing user-vs-global. A `source: "default"` value is `null`, so the consumer applies the browser value.
-- `useGlobalPreferences()` reads `InfrahubPreferences(scope: GLOBAL)` (raw org values) and is used *only* by the Organisation-defaults editor — so it edits the raw global, correct even for an admin who also has a personal override. Gated server-side by `manage_global_preferences`.
-- Writes go through `InfrahubSetPreferences(scope, …)`: the user card writes `scope: USER` (Automatic = explicit-null reset), the org card writes `scope: GLOBAL`. Success invalidates the effective query (and the global-scope query for org writes).
-- There is **no** generic read of another user's preferences and no generic CRUD mutation; reads go through `InfrahubPreferences(scope)` and writes through the single `InfrahubSetPreferences(scope, …)`.
-- All write hooks invalidate `useEffectivePreferences()` on success.
-- No `localStorage` dual-write.
+- `useEffectivePreferences()` reads `InfrahubEffectivePreferences` and exposes the typed, resolved map
+  `prefs.date_format` / `prefs.timezone` as `{ value, source }` (source `user`/`global`/`default`).
+  A `source: "default"` value is `null`, so the consumer applies the browser value.
+- `useGlobalPreferences()` reads `InfrahubGlobalPreferences` (raw org values), used only by the
+  Organisation-defaults editor; gated server-side.
+- A `useCanManageGlobalPreferences()` hook (backed by the generic `InfrahubPermissions` query) gates
+  the Organisation-defaults tab.
+- Writes go through `InfrahubSetPreferences(scope, …)` — the user card writes `scope: USER`, the org
+  card `scope: GLOBAL`; success invalidates the effective (and global) queries.
 
 ### Preferences surfaces (account settings)
 
-User preferences live **inside the Profile tab**, in a "Preferences" card rendered **below the
-profile details** (not a separate tab). Organisation/global preferences stay in their own gated tab:
+- **Personal preferences** — a "Preferences" card on the Profile tab (`/profile`), below the account
+  details. Each field is pre-filled from the caller's own override; when they have none the control
+  shows the placeholder **"Automatic (inherited)"** (the value is inheriting the org/browser default).
+- **Organisation defaults** tab (`/profile/organisation-defaults`) — edits the raw global values;
+  visible only when the caller may manage global preferences (via the permission hook above).
+- **Clearing an override** uses the shared combobox's standard behaviour: re-selecting the currently
+  selected value clears it (→ inherit). There is no bespoke "Automatic" option or reset button — this
+  keeps the preferences dropdowns consistent with every other combobox in the app.
+- **Source indicator.** An **(i) info icon** to the right of each field explains where the current
+  effective value comes from: your preference / the organisation default / your browser.
+- Both dropdowns use the same shared `ComboboxField` at the same fixed width; the date-format options
+  are labelled by their format, with a live example beside the input. The timezone list ensures `UTC`
+  is present (V8/Chrome omits it from `Intl.supportedValuesOf`).
 
-- **Personal preferences** — a "Preferences" card on the Profile tab (`/profile`), below the account details. Card title: "Preferences". Each field is pre-filled from the caller's own override when they have one, otherwise it shows the **"Automatic"** option (see below). The `UserPreference` row is created lazily on first save.
-- **Organisation defaults** tab (`/profile/organisation-defaults`) — edits the raw global values on `GlobalPreference` (never the merged values, so an admin who also has a personal override still edits the org default correctly). Visible only when the caller may manage global preferences (see Permissions). Card title: "Global date and time". No "Automatic" option here — the org card sets the defaults themselves.
-- **"Automatic" option (= no override / inherit).** Each dropdown has an **Automatic** entry at the top. When the user has no override the field shows "Automatic"; selecting it clears the override (explicit-null write). It replaces a separate "reset to global" button — selecting Automatic *is* the reset. What "Automatic" resolves to is explained by the source indicator, not the option label.
-- **Source indicator.** Instead of a sentence under the input, an **(i) info icon to the right** of each field carries a tooltip explaining where the current effective value comes from: **your preference** / **the organisation default** / **your browser** (with the resolved value). Keyboard-accessible, AA contrast.
-- **Layout.** Object-details-style rows (a shared `DetailRow`: icon + label / control) with full-bleed separators between the rows and before the action buttons. Both dropdowns use the same shared `ComboboxField` at the **same fixed width**; each date-format option is labelled by its format (the pattern text, or a name where the pattern is unfriendly, e.g. "ISO 8601"), with a live example of the selected format shown beside the (width-capped) input.
-- Form inputs (presets only — no free-text patterns in the UI):
-  - `date_format`: the five semantic-key presets (see "Date format: semantic keys") plus the Automatic entry. The option's stored value is the key; its label is the human-facing format.
-  - `timezone`: a searchable list over `Intl.supportedValuesOf('timeZone')` (with `UTC` ensured present — V8/Chrome omits it) plus the Automatic entry.
+### Date rendering — DateDisplay as the consolidation vehicle (PR3)
 
-### Date rendering — DateDisplay as the consolidation vehicle
+`DateDisplay` (`frontend/app/src/shared/components/display/date-display.tsx`) is where preferences
+land. A hook (`useDateFormat`) reads `useEffectivePreferences()`, maps the effective `date_format`
+**key** to its date-fns pattern (`entities/preferences/domain/date-format-presets.ts`), and formats;
+when `source: "default"` it falls back to the browser locale/zone. date-fns is v4 — use `@date-fns/tz`
+for timezone-aware formatting. Known call sites to migrate to `DateDisplay`: `global-event.tsx`,
+`time-selector.tsx`, `duration-display.tsx`, `search-nodes.tsx`. Form inputs (display-less) are out of
+scope.
 
-`DateDisplay` (`frontend/app/src/shared/components/display/date-display.tsx`) is where the preferences land. An internal hook (`useDateFormat`) feeds it:
+## Future Preferences (out of V1)
 
-- Reads `useEffectivePreferences()`.
-- Resolves the effective `date_format` **key** to its date-fns pattern via the frontend key→pattern map (`entities/preferences/domain/date-format-presets.ts`), then formats.
-- When both global and user are unset (`source: "default"`), fall back to the **browser**: `date_format` → the browser locale's date/time formatting (e.g. `toLocaleString` / `Intl.DateTimeFormat` locale defaults, not a fixed key); `timezone` → `Intl.DateTimeFormat().resolvedOptions().timeZone`. (Server-side rendering has no browser, so `render_datetime` falls back to the `ISO_DATETIME` key instead — see below.)
-- date-fns is v4 — use the first-party `@date-fns/tz` package (not the legacy `date-fns-tz`) for timezone-aware formatting.
-- The timezone preference applies to absolute renderings and tooltips (`shared/utils/date.ts`); relative-time text ("2 days ago") is timezone-independent and unchanged.
-- Known non-`DateDisplay` display call sites to migrate to `DateDisplay` (preferred) or the hook:
-  - `entities/events/ui/global-event.tsx` (two direct `format()` calls)
-  - `entities/navigation/ui/time-selector.tsx`
-  - `shared/components/display/duration-display.tsx`
-  - `entities/navigation/ui/search-anywhere/search-nodes.tsx`
-- Form inputs (`datetime.field.tsx`, `date-picker.tsx`) do submission/validation, not display — out of scope.
-
-## Future Preferences (out of V1, listed for context)
-
-These will be added incrementally once the V1 plumbing is proven. Each requires its own design pass:
-
-- **Dark mode / theme** — needs a decision on system-vs-stored preference, transition strategy, and whether the global default is meaningful.
-- **Language** — depends on the i18n strategy.
-- **Density** (compact / comfortable list rows).
-- **Default landing page after login**.
-
-These are listed here as a backlog hint, not committed scope.
+Dark mode / theme, language, density, default landing page — each needs its own design pass; listed
+as a backlog hint, not committed scope.
 
 ## Out of Scope (separate specs/tickets)
 
-- Saved views — `dev/specs/2026-04-saved-views.md`
-- Saved filters (formerly `last_used_filters`) — `dev/specs/2026-04-saved-filters.md`
-- "Show extra fields" toggle persistence — `dev/specs/2026-04-show-extra-fields.md`
-- `branch_delete_mode` — explicitly dropped. Persisting a destructive default is too dangerous; the dialog will keep prompting per action.
-- Cross-account preference import/export.
-- Schema graph visualisation state (fold/zoom/positions) — stays in `localStorage` for now.
+Saved views, saved filters, "show extra fields" persistence, `branch_delete_mode` (dropped —
+persisting a destructive default is unsafe), cross-account import/export, schema-graph view state.
 
 ## Resolved Decisions
 
-- **Model** — `StandardNode` objects (`GlobalPreference`, `UserPreference`), not schema nodes. Reads/writes are custom GraphQL only; this is what makes user preferences private per-account (no generic query can leak them).
-- **Profiles** — not used (schema-`Node` feature; irrelevant to `StandardNode`; merge is trivial in a resolver).
-- **Singleton enforcement for `GlobalPreference`** — single instance, fetched via `get_global()` with lazy create-if-missing; no graph migration required.
-- **Effective query shape** — scalar fields, plus a `can_edit_global_preferences` boolean for tab gating.
-- **Default when nothing is stored** — on the web, the **browser's own values** (browser locale date/time formatting + browser-resolved timezone). Server-side (no browser) the backend's `render_datetime` falls back to the `ISO_DATETIME` key. The `ISO_DATETIME` format (`yyyy-MM-dd HH:mm`) is otherwise just one selectable preset.
-- **Surface location** — user preferences render in a "Preferences" card on the Profile tab, below the account details (not a separate tab); global/organisation preferences stay in their own gated tab.
-- **Format input style** — the five semantic-key presets only; the `DateFormat` GraphQL enum validates writes, so unknown keys are rejected even via the SDK/API (the value is no longer free-form). Adding a format is one enum/key-map entry on each renderer, no schema migration.
-- **"Automatic" option** — each dropdown offers an Automatic (= inherit / no override) entry; selecting it clears the override, replacing a separate reset button. Shown as the selected option when the user has no override.
-- **Source indicator** — an (i) tooltip to the right of each field states whether the effective value comes from the user, the organisation default, or the browser (no sentence under the input).
-- **`UserPreference` creation** — lazy create on first save, no row at account creation.
-- **Admin gating for `GlobalPreference`** — new `manage_global_preferences` global permission, checked imperatively in the mutation resolver (not via the object-permission kind mapping, which does not apply to a `StandardNode`).
+- **Model** — one owner-keyed `Preference` `StandardNode` (`owner_id` = account id, or the Root id for
+  global), not two classes and not schema nodes. Reads/writes are custom GraphQL only.
+- **Reads never create; no init seed** — a missing row means "nothing set"; the row is created lazily
+  only on the first write. (Avoids a `get_*` that writes, and keeps reads routable to replicas.)
+- **`date_format` is a `DateFormat` Python enum** (single source of truth) → GraphQL enum via
+  `Enum.from_enum`; the model validates against it. No server-side date renderer in V1 (clients
+  render).
+- **Read API shape** — three typed fields (effective/user/global), not one `scope`-parameterized
+  query returning a `{key,value,source}` string list. Permission info is **not** in the payload — the
+  frontend uses the generic `InfrahubPermissions` query.
+- **Write API shape** — one mutation with a write-only `PreferenceWriteScope` (`USER`/`GLOBAL`);
+  `EFFECTIVE` is unrepresentable as a write.
+- **Clearing an override** — re-select the current value (the shared combobox's standard reset); no
+  bespoke "Automatic" option. A field with no override shows the "Automatic (inherited)" placeholder.
+- **Global scope gated on read and write** — `manage_global_preferences`, checked imperatively.
+- **Orphaned rows** on account deletion are accepted for V1 (StandardNode has no cascade) and tracked
+  in Jira.
+- **Module layout** — shared GraphQL vocab in `graphql/types/preferences.py`; permission constant in
+  `core/preferences/permissions.py`; package `__init__` is re-exports only.
 
 ## Migration & Rollout
 
-- Purely additive. New `StandardNode` types, new custom GraphQL query + mutations, new frontend hooks + tabs.
-- **No graph migration and no schema change** — `StandardNode`s persist on first write; the `GlobalPreference` singleton is lazily created on first access.
-- Existing date-rendering code keeps working until each call site migrates to `DateDisplay`. Migration can ship incrementally per call site.
+- Purely additive: one new `StandardNode`, three custom read fields + one mutation, new frontend
+  hooks + surfaces. **No graph migration, no schema change, no init seed.** The feature is unreleased,
+  so there is no data to migrate.
+- Existing date-rendering code keeps working until each call site migrates to `DateDisplay` (PR3),
+  incrementally.
