@@ -231,15 +231,34 @@ truth (the global read/write enforce the permission regardless).
   are labelled by their format, with a live example beside the input. The timezone list ensures `UTC`
   is present (V8/Chrome omits it from `Intl.supportedValuesOf`).
 
-### Date rendering — DateDisplay as the consolidation vehicle (PR3)
+### Date rendering — one preference-aware mechanism (PR3)
 
-`DateDisplay` (`frontend/app/src/shared/components/display/date-display.tsx`) is where preferences
-land. A hook (`useDateFormat`) reads `useEffectivePreferences()`, maps the effective `date_format`
-**key** to its date-fns pattern (`entities/preferences/domain/date-format-presets.ts`), and formats;
-when `source: "default"` it falls back to the browser locale/zone. date-fns is v4 — use `@date-fns/tz`
-for timezone-aware formatting. Known call sites to migrate to `DateDisplay`: `global-event.tsx`,
-`time-selector.tsx`, `duration-display.tsx`, `search-nodes.tsx`. Form inputs (display-less) are out of
-scope.
+All user-facing dates render against the user's `date_format` + `timezone` preferences through a
+**single mechanism**, so rendering is consistent app-wide without per-site preference plumbing:
+
+- **`useFormatDate()`** (`shared/context/date-preferences-context.tsx`) is the one entry point:
+  `formatDate(date, variant?)` with variants **`datetime`** (default — the user's full preferred
+  pattern in their timezone), **`date`** (date-only, derived by stripping the pattern at the first
+  time token), and **`relative`** ("x ago", timezone-independent). Use the hook when code needs a
+  date *string*; use the `DateDisplay` component when rendering JSX.
+- **Layering.** The hook reads a `DatePreferencesContext` defined in `shared` (so `shared` carries no
+  dependency on `entities/preferences`); a `DatePreferencesProvider` in `entities/preferences` fills
+  it from `useEffectivePreferences()` and is mounted app-wide in `app.tsx`. When no provider is
+  mounted, or a preference's `source` is `"default"`, formatting falls back to the **browser locale
+  and zone** (`toLocaleString`) — never a hardcoded pattern.
+- **`DateDisplay`** keeps its historic look by default (relative "x ago" for recent dates, compact
+  date otherwise), but its **tooltip** now shows the preferred full datetime+timezone, and a new
+  **`variant="datetime"`** renders the full preferred timestamp inline. A `dateFormat` prop remains
+  as an explicit escape hatch for the rare site that must pin a specific pattern.
+- **Timezone.** date-fns v4 + the first-party **`@date-fns/tz`** (`TZDate`) render an instant in the
+  chosen IANA zone; `patternForKey` (exported from `date-format-presets.ts`) maps the semantic key to
+  the date-fns pattern.
+- **Migration.** Every user-facing raw date render (ad-hoc `format()`/`toLocaleString()`, the four
+  named sites `global-event.tsx`/`time-selector.tsx`/`duration-display.tsx`/`search-nodes.tsx`, plus
+  metadata tooltips, token expiry, last-refresh, filter tags, …) routes through `DateDisplay`/the
+  hook at its original granularity. **Not migrated:** form inputs/date-pickers, `toISOString()` values
+  sent to APIs or used as keys, chart axes, and tests — those are machine/serialized, not
+  preference-driven display.
 
 ## Future Preferences (out of V1)
 
