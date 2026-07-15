@@ -969,7 +969,7 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.136.3"
+version = "0.139.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -978,9 +978,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/81/2d/ff8d91d7b564d464629a0fd50a4489c97fcb836ac230bf3a7269232a9b1f/fastapi-0.136.3.tar.gz", hash = "sha256:e487fae93ad408e6f47641ee4dfe389864fd7bec92e547ea8498fc13f43e83ab", size = 396410, upload-time = "2026-05-23T18:53:15.192Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d3/af/a5f50ccfa659ec1802cb4ca842c23f06d906a8cc9aef6016a2caeea3d4ed/fastapi-0.139.0.tar.gz", hash = "sha256:99ab7b2d92223c76d6cf10757ab3f89d45b38267fc20b2a136cf02f6beac3145", size = 423016, upload-time = "2026-07-01T16:35:33.436Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e0/82/45359b62a067409bd929ae8a56b8ed13e5a8c8a61194b3c236920999ab83/fastapi-0.136.3-py3-none-any.whl", hash = "sha256:3d2a69bdf04b7e9f3afa292c3bc7a98816bbfafa10bc9b45f3f3700d2f761620", size = 117481, upload-time = "2026-05-23T18:53:16.924Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/7c/8e3c6ad324ea5cb36604fc3f968554887891c316d9dfde57761611d907ad/fastapi-0.139.0-py3-none-any.whl", hash = "sha256:cf15e1e9e667ddb0ad63811e60bd11390d1aac838ca4a7a23f421807b2308189", size = 130339, upload-time = "2026-07-01T16:35:32.19Z" },
 ]
 
 [[package]]
@@ -1542,7 +1542,7 @@ requires-dist = [
     { name = "dulwich", specifier = "==1.2.6" },
     { name = "email-validator", specifier = ">=2.1,<2.2" },
     { name = "fast-depends", specifier = "==3.0.5" },
-    { name = "fastapi", specifier = "==0.136.3" },
+    { name = "fastapi", specifier = ">=0.139.0,<1.0.0" },
     { name = "fastapi-storages", specifier = ">=0.3,<0.4" },
     { name = "gitpython", specifier = ">=3.1.50,<4" },
     { name = "graphene", specifier = ">=3.4,<3.5" },
@@ -1559,8 +1559,8 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = "==1.39.0" },
     { name = "opentelemetry-instrumentation-aio-pika", specifier = "==0.60b0" },
     { name = "opentelemetry-instrumentation-fastapi", specifier = "==0.60b0" },
-    { name = "prefect", specifier = "==3.7.5" },
-    { name = "prefect-redis", specifier = "==0.2.12" },
+    { name = "prefect", git = "https://github.com/fatih-acar/prefect.git?branch=feat%2Fredis-sentinel-on-22211" },
+    { name = "prefect-redis", git = "https://github.com/fatih-acar/prefect.git?subdirectory=src%2Fintegrations%2Fprefect-redis&branch=feat%2Fredis-sentinel-on-22211" },
     { name = "puremagic", specifier = ">=1.30,<2" },
     { name = "pyarrow", specifier = ">=14" },
     { name = "pydantic", specifier = ">=2.12,<2.13" },
@@ -2790,8 +2790,8 @@ wheels = [
 
 [[package]]
 name = "prefect"
-version = "3.7.5"
-source = { registry = "https://pypi.org/simple" }
+version = "3.6.24+21772.g2e26e7345"
+source = { git = "https://github.com/fatih-acar/prefect.git?branch=feat%2Fredis-sentinel-on-22211#2e26e7345bf1b04dbd9fe2ebcf73ffa5a7bc981e" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
@@ -2851,22 +2851,14 @@ dependencies = [
     { name = "websockets" },
     { name = "whenever", marker = "python_full_version >= '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a0/b4/ba44a2263940b53db323d059770e005aac959d272ba2025ad6fc7de10cba/prefect-3.7.5.tar.gz", hash = "sha256:e2838fa80562bfb7e27e67ea63c7b13d6fdead8052dbe76eb394c6b919ef3dcd", size = 13881122, upload-time = "2026-06-18T22:39:17.378Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/30/e9c5ad5f3fd17f7309bcd9bab6af5cb5811ae3b50d7d0fd15a3ea899f5e0/prefect-3.7.5-py3-none-any.whl", hash = "sha256:214837b7cb1e10f8fec59018253cd8ef65c8b394b7df29c511b645b0ff5e4478", size = 14766992, upload-time = "2026-06-18T22:39:14.383Z" },
-]
 
 [[package]]
 name = "prefect-redis"
-version = "0.2.12"
-source = { registry = "https://pypi.org/simple" }
+version = "0.2.1.dev21773+g2e26e7345"
+source = { git = "https://github.com/fatih-acar/prefect.git?subdirectory=src%2Fintegrations%2Fprefect-redis&branch=feat%2Fredis-sentinel-on-22211#2e26e7345bf1b04dbd9fe2ebcf73ffa5a7bc981e" }
 dependencies = [
     { name = "prefect" },
     { name = "redis" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/7c/cde8765c731560781ffd188a6d871f2710753f2d80ea10db034ce543a697/prefect_redis-0.2.12.tar.gz", hash = "sha256:92a19d607713239e20d146f42db0fcbc06895821e80091ba263fc8e7909b0bad", size = 57678, upload-time = "2026-06-05T19:38:41.186Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/76/de/708e65fa9655f10e7e61190de2ed03dabd25f03fb2231acfe3709d995411/prefect_redis-0.2.12-py3-none-any.whl", hash = "sha256:c97e3642d012d6b76c9ba794bb08b3cbd576ae9b7f60b52943dfd1f0d1ac5df6", size = 37950, upload-time = "2026-06-05T19:38:40.118Z" },
 ]
 
 [[package]]
@@ -3262,7 +3254,7 @@ wheels = [
 
 [[package]]
 name = "pydocket"
-version = "0.20.3"
+version = "0.23.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "burner-redis" },
@@ -3279,9 +3271,9 @@ dependencies = [
     { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "uncalled-for" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/41/4e/4994a407ae4e7561e84881b1edda8fedb58e7078c693845bdd1b66a73765/pydocket-0.20.3.tar.gz", hash = "sha256:ecf923cbcc8f7f26c7e76cad03a03d179536e4d947f322a89e9cc899a2631f72", size = 381244, upload-time = "2026-05-19T13:42:50.165Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/f6/3018cfe7a30c5dc844421336a5bb07c7547e8aee83e3e34ef04ea461fcb5/pydocket-0.23.0.tar.gz", hash = "sha256:831c7df7b72e2135307c37441618946d413674bb026e29219b892244f72c8d5f", size = 424266, upload-time = "2026-07-03T13:25:53.764Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c5/18/2cf2fcabdc99c858401b7a44b7577e7a3002648048bb4d77517c22d8264d/pydocket-0.20.3-py3-none-any.whl", hash = "sha256:ba009b53270c5e677175def464fed2137d6289a9c9f57f376885f6c27f24a466", size = 110356, upload-time = "2026-05-19T13:42:47.816Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/83/354f75660f583469df61b9553680552240774a991c33fbd77aded9a95a8a/pydocket-0.23.0-py3-none-any.whl", hash = "sha256:ab2b9de8d892a814db432e473b8a7a4340c43ed32852b142d2f3d053a6156075", size = 128604, upload-time = "2026-07-03T13:25:52.358Z" },
 ]
 
 [[package]]
