@@ -223,6 +223,8 @@ Streamlit
 string_type
 subchart
 subcommand
+submenu
+submenus
 submodule
 subnet
 subnets
