@@ -261,6 +261,8 @@ const sidebars: SidebarsConfig = {
             { type: 'doc', id: 'git-integration/connect-repository', label: 'Connect a repository' },
             { type: 'doc', id: 'git-integration/infrahub-yml', label: 'infrahub.yml configuration' },
             { type: 'doc', id: 'git-integration/branch-synchronization', label: 'Branch synchronization' },
+            { type: 'doc', id: 'git-integration/multi-environment', label: 'Multiple environments' },
+            { type: 'doc', id: 'git-integration/promote-between-environments', label: 'Promote between environments' },
           ],
         },
       ],

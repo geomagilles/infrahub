@@ -1,0 +1,89 @@
+---
+title: Multiple environments from a single repository
+---
+
+Run a separate Infrahub instance for each environment — development, staging, production — from one Git repository. Each instance reads its schemas, objects, and automation from a [read-only repository](./overview.mdx#read-only-vs-core) pinned to one long-lived branch. To move a change from one environment to the next, merge it into the next branch on your Git host, then trigger an import on the target instance.
+
+Use this pattern when you want environment isolation with a Git-native promotion path: each environment is independent, every promotion is a pull request on your Git host, and a change is reviewed on the Git side and again inside Infrahub before it reaches production.
+
+## What moves through Git
+
+A read-only repository imports what you declare in [`.infrahub.yml`](./infrahub-yml.mdx):
+
+- Schemas
+- Objects defined in object files
+- GraphQL queries
+- Jinja2 and Python Transformations
+- Artifact definitions
+- Generators
+- Checks
+- Menus
+
+These are the changes you promote between environments. Data created directly in an instance through the UI or API — the objects your users edit day to day — is not part of this. It lives in each instance and never moves through Git.
+
+## Git and Infrahub terminology
+
+A promotion touches two systems that share vocabulary — both Git and Infrahub have branches, a `main`, and a merge step. The terms below keep them apart:
+
+- **Git branch**, **Git pull request** — on your Git host. The long-lived per-environment branches (`develop`, `staging`, `main`) are Git branches; moving a change from one to the next is a pull request.
+- **Infrahub branch**, **proposed change** — inside a single instance. You import into an Infrahub branch, review it as a proposed change, and merge it into that instance's `main`.
+
+Production's Git branch is also named `main`, but it is unrelated to any instance's internal `main`.
+
+## The model
+
+One repository holds one long-lived Git branch per environment. Each branch maps to its own instance through that instance's read-only repository `ref`:
+
+| Git branch | Infrahub instance | Read-only repository `ref` |
+| --- | --- | --- |
+| `develop` | Development | `develop` |
+| `staging` | Staging | `staging` |
+| `main` | Production | `main` |
+
+This example uses three environments, but the count is arbitrary — two (`develop` → `main`) or five work the same way, and the steps for each promotion hop are identical. Add or remove an environment by adding or removing a Git branch and the instance that tracks it.
+
+Every environment is a **consumer**: its files come from a read-only repository, and no instance holds a read-write [`Repository`](./overview.mdx#read-only-vs-core), so nothing is ever pushed back to Git. You author changes the plain Git way — edit files locally and open a pull request into an environment's branch.
+
+:::note Use a read-only repository, not a read-write one
+
+Read-write `Repository` connections are not recommended for multi-environment setups: they push merges back to Git and track every branch, which breaks the per-environment isolation this pattern depends on. If you currently connect the repository as a read-write `Repository` on a single instance and want to adopt this pattern, connect it as a read-only repository instead.
+
+:::
+
+A read-only repository does not poll the remote for new commits — there is no background sync, unlike a read-write repository. It imports only in response to an explicit action: running the **Import latest commit** action, or changing its `ref` (which dispatches an import on its own). Either way, an import is a deliberate step, not an automatic sync of every new commit on the branch.
+
+## Promoting a change
+
+Getting a change into the first environment and moving it onward use the same two steps — merge on the Git side, then import on the target instance:
+
+- **Authoring** runs on the first environment as a repeated loop: edit files, push, open a pull request into its branch, merge, import, test, repeat.
+- **Promotion** moves the accumulated changes to the next environment, less often and with more review.
+
+**Import into an Infrahub branch, not straight into the instance's `main`.** Importing into a branch lets you review the result as a [proposed change](../proposed-changes/overview.mdx) — the real schema and data diff, plus its check pipeline — before anything reaches `main`, and discard it if the import is wrong. When it looks right, merge the proposed change into the instance's `main`. That proposed change is a second review, after the Git pull request. You can review it manually or gate it in CI (see [automating the promotion](./promote-between-environments.mdx#automate-the-promotion-optional)).
+
+:::caution Importing straight to `main`
+
+Importing directly into an instance's `main` is possible but not recommended. An import can fail for many reasons — especially while a schema is still being developed and iterated — and an Infrahub branch can be discarded, whereas a failed import on `main` is hard to undo.
+
+:::
+
+:::note Retiring schema is explicit, not automatic
+
+Removing a field or node from the schema files does not remove it from an instance. To retire schema, set `state: absent` on those nodes in the schema files yourself — the same as with `infrahubctl schema load`. It is possible, but not declarative.
+
+:::
+
+## Reaching production safely
+
+Lower environments make promotion safer, but they are not proof. Staging drifts from production over time — different data, a different history of applied changes — so a change that imported cleanly on staging can still behave differently against production's actual state.
+
+Importing into an Infrahub branch and merging through a proposed change removes most of that risk: you review the exact diff before it touches production `main`. But the merge of that proposed change can itself fail partway and leave `main` in an unexpected state, and there is no clean rollback — an import applies forward, and reverting the `ref` restores the files, not the instance state the import produced.
+
+To be certain a promotion applies cleanly, test it against production's real state first. Provision a pre-production instance on demand from a current production [database backup](../deploy-manage/maintain-upgrade/database-backup/backup-and-restore.mdx), run the promotion there, and confirm it applies cleanly before promoting production itself. Because it starts from a fresh backup, it matches production exactly, with none of the drift a long-lived staging environment accumulates. This rehearsal can be added as a stage in the pipeline that merges the promotion's proposed change, so production is touched only after the same change has applied cleanly on a copy of it.
+
+## Further reading
+
+- [Promote changes between environments](./promote-between-environments.mdx) — the end-to-end how-to
+- [Git integration](./overview.mdx) — repository types, `ref` tracking, and the import model
+- [Proposed changes](../proposed-changes/overview.mdx) — the review and merge workflow used inside each instance
+- [Database backup and restore](../deploy-manage/maintain-upgrade/database-backup/backup-and-restore.mdx) — spinning up a pre-production copy of production

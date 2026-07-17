@@ -1,0 +1,162 @@
+---
+title: Promote changes between environments
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Promote changes between environments
+
+Move changes — schemas, objects, Transformations, Generators, and the rest of your [`.infrahub.yml`](./infrahub-yml.mdx) — from one Infrahub environment to the next with a Git merge followed by an import on the target instance. This guide sets up a set of environments backed by one repository, then walks the path from authoring a change to promoting it to production. For the concepts behind it, see [multiple environments from a single repository](./multi-environment.mdx).
+
+The examples use three environments — `develop` → development, `staging` → staging, `main` → production — but the count is arbitrary. Two environments or five work the same way, and the steps for each promotion hop are identical.
+
+This guide distinguishes **Git branches** (`develop`, `staging`, `main` on your Git host) from **Infrahub branches** (a working branch inside a single instance, such as `promote`). See [Git and Infrahub terminology](./multi-environment.mdx#git-and-infrahub-terminology).
+
+## Prerequisites
+
+- One Infrahub instance per environment, each running and reachable.
+- One Git repository with a long-lived branch per environment (for example `develop`, `staging`, `main`).
+- A [`.infrahub.yml`](./overview.mdx#infrahub-yaml) file on each branch.
+- A credential for the Git host if the repository is private. GitHub and GitLab access tokens go in the `password` field; leave `username` empty (see [connect a repository](./connect-repository.mdx#step-2-add-the-repository)).
+
+## Register the repository on each instance
+
+Every environment connects to the same repository through a read-only repository pinned to that environment's Git branch. Register it once per instance.
+
+### Step 1: Create a credential
+
+Run this once on each instance if the repository is private.
+
+```graphql
+mutation {
+  CorePasswordCredentialCreate(data: {
+    name: { value: "git" }
+    username: { value: "" }
+    password: { value: "<personal-access-token>" }
+  }) { ok object { id } }
+}
+```
+
+### Step 2: Add the read-only repository
+
+Set `ref` to the environment's Git branch. Run this on each instance with the matching branch — `develop` on development, `staging` on staging, `main` on production.
+
+<Tabs groupId="method" queryString>
+<TabItem value="Via the Web Interface" default>
+  1. Go to **Integrations > Git Repositories**.
+  2. Click **+ Add Git Repository**.
+  3. Select **Read-only Repository**.
+  4. Enter the name and location (URL), select the credential, and set **Ref** to the environment's Git branch.
+</TabItem>
+<TabItem value="Via infrahubctl">
+  ```shell
+  infrahubctl repository add "infra" "https://github.com/<org>/<repo>.git" --read-only --ref staging --username "" --password <personal-access-token>
+  ```
+</TabItem>
+<TabItem value="Via the GraphQL Interface">
+  ```graphql
+  mutation {
+    CoreReadOnlyRepositoryCreate(data: {
+      name: { value: "infra" }
+      location: { value: "https://github.com/<org>/<repo>.git" }
+      ref: { value: "staging" }
+      credential: { id: "<credential-id>" }
+    }) { ok }
+  }
+  ```
+</TabItem>
+</Tabs>
+
+:::note How imports are triggered
+
+A read-only repository does not poll for new commits — there is no background sync. An import runs only when you trigger one: the **Import latest commit** action in the UI (or the mutation below) imports the current `ref`'s latest commit, and changing the repository's `ref` dispatches an import on its own. A mutation that returns `ok: true` means the import was dispatched, not finished — confirm a change landed by checking the repository's recorded `commit` on the instance, not the mutation response.
+
+:::
+
+## Author a change
+
+Authoring runs on the first environment as a repeated loop.
+
+1. Edit the schema, object, Transformation, or Generator files in a local checkout.
+2. Commit and push, then open a pull request into `develop` and merge it.
+3. On the development instance, import the merged commit into an Infrahub branch and merge it into the instance's `main` through a proposed change (the [Promote a change](#promote-a-change) steps below).
+4. Test, then repeat until the change is ready to promote.
+
+Objects you create in the development UI or API stay on that instance. Only files move to the next environment.
+
+## Promote a change
+
+A promotion is a Git merge into the next branch, then an import on the target instance. Always import into an **Infrahub branch** and merge it through a proposed change — never straight into the instance's `main`. Importing into a branch lets you review the exact diff, run the check pipeline against it, and discard it if the import is wrong.
+
+1. On your Git host, open a pull request from the source branch to the next branch (for example `develop` → `staging`) and merge it.
+2. On the target instance, create an Infrahub branch to import into:
+
+   ```graphql
+   mutation { BranchCreate(data: { name: "promote" }) { ok } }
+   ```
+
+3. Import the merged commit into that branch. Every mutation runs against the branch in its endpoint path, so the content loads into `promote` only — the instance's `main` is untouched.
+
+   <Tabs groupId="method" queryString>
+   <TabItem value="Via the Web Interface" default>
+     1. Switch to the `promote` branch in the UI.
+     2. Open the read-only repository and run the **Import latest commit** action.
+   </TabItem>
+   <TabItem value="Via the GraphQL Interface">
+     ```graphql
+     # against the branch, e.g. https://<host>/graphql/promote
+     mutation {
+       InfrahubReadOnlyRepositoryImportLastCommit(data: { id: "<repository-id>" }) { ok }
+     }
+     ```
+   </TabItem>
+   </Tabs>
+
+4. Open a [proposed change](../proposed-changes/overview.mdx) from `promote` to `main`, review the diff, wait for its checks to finish, and merge it. Merging applies the change to the instance's `main`.
+
+:::caution Importing straight to `main`
+
+You can point the import at the instance's `main` (`/graphql/main`) to skip the branch and proposed change. It is faster but not recommended: an import can fail — especially while iterating on a schema — and a failed import on `main` is hard to undo, whereas an Infrahub branch can be discarded. Use it only for low-stakes environments where you accept that risk.
+
+:::
+
+Before promoting to production, confirm the change applies cleanly against production's real state — not only against staging, which drifts over time. See [reaching production safely](#reaching-production-safely).
+
+## Automate the promotion (optional)
+
+:::note Experimental — a starting point, not a finished solution
+
+The manual steps above are the supported path. Automating the Infrahub side is possible, but the mechanics still have rough edges — treat what follows as inspiration to adapt, not a turnkey pipeline, and keep production promotions manual until you have validated your own automation end to end.
+
+:::
+
+The shape of an automated gate: on a Git pull request into an environment branch, CI imports the promoted branch into an Infrahub branch, opens a proposed change, and blocks the pull request — as a **required status check** — until the proposed change's checks pass. On merge of the Git pull request, a second job merges that proposed change into the instance's `main`. The import never runs against `main` directly.
+
+The reusable piece is checking, from CI, whether a proposed change's checks have finished and passed. Each validation on a proposed change reports a `state` (`queued`, `in_progress`, `completed`) and a `conclusion` (`unknown`, `failure`, `success`):
+
+```graphql
+query {
+  CoreProposedChange(ids: ["<proposed-change-id>"]) {
+    edges { node {
+      validations { edges { node {
+        display_label
+        state { value }
+        conclusion { value }
+      } } }
+    } }
+  }
+}
+```
+
+Poll that query until every validation's `state` is `completed`, then fail the CI job unless every `conclusion` is `success`. Store each instance's address and an [API token](../deploy-manage/user-management/managing-api-tokens.mdx) as CI secrets, and authenticate with the `X-INFRAHUB-KEY` header.
+
+## Reaching production safely
+
+Even a passing proposed change is validated against one instance's state, and the proposed-change merge itself can fail partway and leave `main` in an unexpected state — with no clean rollback. To be certain a promotion applies cleanly to production, rehearse it first against production's real state: provision a pre-production instance from a current [database backup](../deploy-manage/maintain-upgrade/database-backup/backup-and-restore.mdx), run the promotion there, and only promote production once it applies cleanly. See [reaching production safely](./multi-environment.mdx#reaching-production-safely) for the reasoning.
+
+## Related
+
+- [Multiple environments from a single repository](./multi-environment.mdx) — the concepts behind this workflow
+- [Connect a repository](./connect-repository.mdx) — repository registration in depth
+- [Proposed changes](../proposed-changes/overview.mdx) — the review workflow used inside each instance
